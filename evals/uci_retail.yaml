@@ -1,0 +1,25 @@
+# Golden questions for the real UCI Online Retail data (run `python -I scripts/fetch_uci.py` first).
+# Questions state the revenue definition so the expected answer is unambiguous.
+csv: ../data/online_retail.csv
+questions:
+  - q: Top 10 products by net revenue (quantity * unit price, returns counted as negative), by description
+    expected_sql: SELECT description, sum(quantity * unitprice) FROM data GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+  - q: What was the net revenue in March 2011 (quantity * unit price, including returns)?
+    expected_sql: SELECT sum(quantity * unitprice) FROM data WHERE invoicedate >= '2011-03-01' AND invoicedate < '2011-04-01'
+  - q: How many customers bought only once, meaning exactly one distinct invoice? Ignore rows without a customer id.
+    expected_sql: SELECT count(*) FROM (SELECT customerid FROM data WHERE customerid IS NOT NULL GROUP BY 1 HAVING count(DISTINCT invoiceno) = 1)
+  - q: Which country had the most distinct invoices?
+    expected_sql: SELECT country, count(DISTINCT invoiceno) FROM data GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+  - q: Which countries grew most in net revenue from Q1 2011 to Q2 2011? Show the top 3 by absolute growth.
+    expected_sql: |
+      SELECT country, sum(quantity*unitprice) FILTER (WHERE invoicedate >= '2011-04-01' AND invoicedate < '2011-07-01')
+                    - sum(quantity*unitprice) FILTER (WHERE invoicedate >= '2011-01-01' AND invoicedate < '2011-04-01') g
+      FROM data GROUP BY 1 ORDER BY g DESC NULLS LAST LIMIT 3
+  - q: What is our profit margin?
+    expect: refuse
+  - q: What is the average age of our customers?
+    expect: refuse
+  - q: Forecast next year's revenue by country.
+    expect: refuse
+  - q: Which marketing channel brought the most customers?
+    expect: refuse

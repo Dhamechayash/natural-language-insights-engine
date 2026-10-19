@@ -1,0 +1,22 @@
+# Golden questions for the small retail fixture. Reference SQL is deliberately written independently of the app.
+csv: ../tests/fixtures/retail_small.csv
+questions:
+  - q: Top 10 products by net revenue, counting returns as negative
+    expected_sql: SELECT description, sum(quantity * unitprice) r FROM data GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+  - q: What was the net revenue in March 2011?
+    expected_sql: SELECT sum(quantity * unitprice) FROM data WHERE strptime(invoicedate, '%m/%d/%Y %H:%M') >= DATE '2011-03-01' AND strptime(invoicedate, '%m/%d/%Y %H:%M') < DATE '2011-04-01'
+  - q: How many customers bought only once (only one distinct invoice)?
+    expected_sql: SELECT count(*) FROM (SELECT customerid FROM data WHERE customerid IS NOT NULL GROUP BY 1 HAVING count(DISTINCT invoiceno) = 1)
+  - q: Which countries have the most invoices?
+    expected_sql: SELECT country, count(DISTINCT invoiceno) FROM data GROUP BY 1 ORDER BY 2 DESC
+  - q: Which pair of products is most often bought together in the same invoice?
+    expected_sql: SELECT a.description, b.description, count(*) c FROM data a JOIN data b ON a.invoiceno = b.invoiceno AND a.stockcode < b.stockcode GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT 1
+    tolerance: 0.01
+  - q: What is our profit margin?
+    expect: refuse
+  - q: What is the average age of our customers?
+    expect: refuse
+  - q: Forecast next year's revenue by country.
+    expect: refuse
+  - q: Which sales rep closed the most orders?
+    expect: refuse

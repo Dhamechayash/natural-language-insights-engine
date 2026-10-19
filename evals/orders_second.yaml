@@ -1,0 +1,15 @@
+# Second, differently shaped CSV (semicolon-delimited, spaces in headers, ISO dates): same app, no code changes.
+csv: ../tests/fixtures/orders_second.csv
+questions:
+  - q: Which category has the highest revenue?
+    expected_sql: SELECT category, sum(units * price_eur) FROM data GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+  - q: How many distinct buyers are there?
+    expected_sql: SELECT count(DISTINCT buyer_email) FROM data
+  - q: Which region placed the most orders?
+    expected_sql: SELECT region, count(*) FROM data GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+  - q: Total units sold in June 2023
+    expected_sql: SELECT sum(units) FROM data WHERE ordered_at >= DATE '2023-06-01' AND ordered_at < DATE '2023-07-01'
+  - q: What was our gross margin by category?
+    expect: refuse
+  - q: What is the typical buyer's gender split?
+    expect: refuse
