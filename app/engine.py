@@ -5,7 +5,9 @@ import threading
 from pathlib import Path
 
 import duckdb
+from langsmith import traceable
 
+from app.charts import recommend_chart
 from app.config import Settings
 from app.errors import JobError
 from app.llm import LLM
@@ -110,6 +112,7 @@ def fallback_answer(columns: list[str], rows: list[list], truncated: bool) -> st
     return f"Returned {len(rows)}{'+' if truncated else ''} rows; see the table."
 
 
+@traceable(name="ask", run_type="chain", process_inputs=lambda i: {"question": i.get("question"), "history": i.get("history")})
 def ask(question: str, db_file: Path, profile: dict, llm: LLM, settings: Settings, history: list[dict] | None = None) -> dict:
     """Returns {status: 'succeeded'|'refused', ...}. Raises JobError for infrastructure failures.
 
@@ -168,5 +171,6 @@ def _finish(question, llm, proposal, sql, columns, rows, truncated, in_tok, out_
         "columns": columns,
         "rows": rows,
         "truncated": truncated,
+        "chart": recommend_chart(columns, rows, truncated),
         "usage": {"input_tokens": in_tok, "output_tokens": out_tok},
     }

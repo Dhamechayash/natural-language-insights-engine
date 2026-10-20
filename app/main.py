@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.cache import cache_key, savings
+from app.charts import recommend_chart
 from app.config import Settings, get_settings
 from app.errors import AppError
 from app.jobs import Store, WorkerPool
@@ -180,6 +181,8 @@ def create_app(settings: Settings | None = None, llm_factory=None) -> FastAPI:
         payload["cache_key"] = cache_key(dataset_id, payload["question"], history, settings.anthropic_model)
         if not body.no_cache and (source := store.cache_lookup(payload["cache_key"])):
             result = dict(source["result"])
+            if not result.get("chart") and result.get("rows"):  # answered before charts existed or before the picker improved
+                result["chart"] = recommend_chart(result["columns"], result["rows"], result.get("truncated", False))
             result["cache"] = {
                 "source_job_id": source["id"],
                 "answered_at": source["updated_at"],

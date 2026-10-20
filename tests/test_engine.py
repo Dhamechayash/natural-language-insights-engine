@@ -106,3 +106,16 @@ def test_timeout_surfaces_as_job_error(retail_db, settings):
 )
 def test_numbers_grounded(text, rows, ok):
     assert numbers_grounded(text, rows) is ok
+
+
+def test_result_carries_a_chart_spec_when_the_shape_allows(retail_db, settings):
+    db, profile = retail_db
+    sql = "SELECT country, count(*) AS n FROM data GROUP BY 1 ORDER BY 2 DESC"
+    result = ask("orders by country", db, profile, FakeLLM([answerable(sql)]), settings)
+    assert result["chart"]["type"] == "bar" and result["chart"]["x"] == "country" and result["chart"]["y"] == ["n"]
+
+
+def test_scalar_result_has_no_chart(retail_db, settings):
+    db, profile = retail_db
+    result = ask("total revenue", db, profile, FakeLLM([answerable(REVENUE)]), settings)
+    assert result["chart"] is None

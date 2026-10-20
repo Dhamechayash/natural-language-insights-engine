@@ -32,10 +32,23 @@
   .scroll { max-height: 320px; overflow: auto; margin-top: .5rem; }
   .q { font-weight: 600; margin-top: 1.2rem; }
   #out:not(:empty) + #ask-row { margin-top: 1rem; }
+  :root { --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300;
+          --ink: #1b1f24; --ink-2: #57606a; --grid: #e6e9ed; }
+  .chart-tools { display: flex; gap: .4rem; align-items: center; margin-bottom: .3rem; }
+  .chart-tools button { padding: .2rem .6rem; font-size: .8rem; background: #fff; border: 1px solid #d0d7de; border-radius: 4px; color: var(--ink-2); }
+  .chart-tools button.on { background: #0969da; border-color: #0969da; color: #fff; }
+  .chart-wrap { position: relative; width: 100%; }
+  .chips { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .5rem; }
+  .chips button { padding: .25rem .6rem; font-size: .8rem; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 12px; color: var(--ink); }
+  .chips button:hover { background: #eef6ff; border-color: #b6d4fe; }
+  .banner { background: #fff8e1; border: 1px solid #d4a72c; border-radius: 6px; padding: .5rem .8rem; margin-bottom: 1rem; }
+  details > summary { cursor: pointer; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <h1>Natural Language Insights Engine</h1>
+<div id="banner" class="banner" hidden></div>
 
 <h2>1. Dataset</h2>
 <div class="row">
@@ -54,6 +67,7 @@
   <button id="ask" disabled>Ask</button>
   <button id="new-thread" hidden>New question</button>
 </div>
+<div id="suggestions" class="chips"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -90,8 +104,47 @@ async function showDataset() {
   $("question").disabled = $("ask").disabled = !ok;
   $("dataset-status").textContent = ready ? `${ready.status}${ready.rows ? ` · ${ready.rows.toLocaleString()} rows · ${ready.columns.length} columns` : ""}` : "No dataset yet.";
   $("schema").innerHTML = ok ? `<table><tr><th>Column</th><th>Type</th><th>Nulls %</th><th>Distinct</th></tr>${ready.profile.columns
-    .map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.type)}</td><td>${c.null_pct}</td><td>${c.distinct}</td></tr>`).join("")}</table>` : "";
+    .map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.type)}</td><td>${c.null_pct}</td><td>${c.distinct}</td></tr>`).join("")}</table>${interpretation(ready.profile)}` : "";
+  showSuggestions(ok ? ready.profile : null);
 }
+
+// What the engine believes about the file: LLM hints are unverified, so they are labelled as such.
+function interpretation(profile) {
+  const a = profile.annotations;
+  const load = profile.load_strategy && profile.load_strategy !== "auto" ? `<li>Loaded with the "${esc(profile.load_strategy)}" fallback.</li>` : "";
+  if (!a && !load) return "";
+  const metrics = (a?.metrics || []).map((m) => `<tr><td>${esc(m.name)}</td><td><code>${esc(m.sql_expression)}</code></td><td>${esc(m.confidence)}</td><td>${esc(m.description)}</td></tr>`).join("");
+  const notes = (a?.notes || []).map((n) => `<li>${esc(n)}</li>`).join("");
+  return `<div style="margin-top:.6rem"><b>Inferred metrics &amp; assumptions</b> <span class="muted">(model hints, unverified)</span>
+    ${metrics ? `<table><tr><th>Metric</th><th>Definition</th><th>Confidence</th><th>Meaning</th></tr>${metrics}</table>` : ""}
+    <ul>${load}${notes}</ul></div>`;
+}
+
+// Starter questions shown under the input once a dataset is ready. Clicking one fills the box so it can be edited before asking.
+const SUGGESTED_QUESTIONS = [
+  "Top 10 products by revenue",
+  "Which countries grew most between two quarters",
+  "Net revenue in a given month",
+  "How many customers bought only once, and what share of revenue they represent",
+  "Which products are most often bought together",
+];
+function showSuggestions(profile) {
+  $("suggestions").innerHTML = profile ? SUGGESTED_QUESTIONS.map((q) => `<button type="button">${esc(q)}</button>`).join("") : "";
+}
+$("suggestions").onclick = (e) => {
+  const b = e.target.closest("button");
+  if (!b || $("question").disabled) return;
+  $("question").value = b.textContent;
+  $("question").focus();
+};
+
+// Without a key every question would fail, so say so up front.
+api("/health").then((h) => {
+  if (!h.llm_configured) {
+    $("banner").hidden = false;
+    $("banner").textContent = "ANTHROPIC_API_KEY is not set on the server: datasets will load, but questions will fail. Set it in .env and restart.";
+  }
+}).catch(() => {});
 
 // Id of the last answered question; the next question is sent as its follow-up.
 let lastJobId = null;
@@ -135,6 +188,11 @@ function cacheInfo(r) {
     cost saved <b>${cost}</b> <span class="muted">on ${esc(s.model)}</span></div>`;
 }
 
+function timing(job) {
+  const secs = Math.max(0, job.updated_at - job.created_at);
+  return `${secs < 0.05 ? "instant" : `answered in ${secs.toFixed(1)}s`}${job.attempts > 1 ? ` · attempt ${job.attempts}` : ""}`;
+}
+
 function render(job) {
   const r = job.result || {};
   if (job.status === "failed") return `<div class="card failed">Failed: ${esc(job.error.message)} <span class="muted">(${esc(job.error.code)})</span></div>`;
@@ -149,8 +207,10 @@ function render(job) {
     ${assumptions ? `<div class="muted">Assumptions:<ul>${assumptions}</ul></div>` : ""}
     <details open><summary class="muted">SQL</summary><div class="sql"><pre>${esc(r.sql)}</pre>
       <button class="copy" type="button" title="Copy SQL" aria-label="Copy SQL">${COPY_ICON}</button></div></details>
-    <div class="scroll"><table><tr>${head}</tr>${body}</table></div>
-    <div class="muted">${r.rows.length} row(s)${r.truncated ? " (truncated)" : ""} · tokens in/out ${r.usage.input_tokens}/${r.usage.output_tokens}</div></div>`;
+    ${r.chart ? `<div class="chart-box" id="chart-${esc(job.id)}"></div>` : ""}
+    <details ${r.chart ? "" : "open"}><summary class="muted">Table (${r.rows.length} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ", truncated" : ""})</summary>
+      <div class="scroll"><table><tr>${head}</tr>${body}</table></div></details>
+    <div class="muted">${timing(job)} · tokens in/out ${r.usage.input_tokens}/${r.usage.output_tokens}</div></div>`;
 }
 
 async function ask() {
@@ -166,8 +226,10 @@ async function ask() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, follow_up_of: lastJobId }),
     });
-    const job = await pollJob(job_id, (j) => (slot.textContent = `Job ${j.status}…`));
+    const t0 = performance.now();
+    const job = await pollJob(job_id, (j) => (slot.textContent = `Job ${j.status}… ${((performance.now() - t0) / 1000).toFixed(1)}s${j.attempts > 1 ? ` (attempt ${j.attempts})` : ""}`));
     slot.outerHTML = render(job);
+    if (job.status === "succeeded") mountChart(job);
     // Failed jobs are not part of the thread; follow-ups attach to the last finished turn.
     if (job.status !== "failed") lastJobId = job.id;
     $("question").value = "";
@@ -181,6 +243,108 @@ async function ask() {
     $("ask").disabled = false;
   }
 }
+// ---- Charts. The server picks the chart from the result's shape (app/charts.py); this only draws it.
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const seriesColor = (i) => css(`--series-${(i % 6) + 1}`);
+const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+const full = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+const charts = {};
+
+function chartData(r, spec, type) {
+  const idx = (c) => r.columns.indexOf(c);
+  const ix = idx(spec.x);
+  let rows = r.rows.filter((row) => row[ix] !== null);
+  if (spec.x_kind === "time") rows = [...rows].sort((a, b) => (a[ix] < b[ix] ? -1 : a[ix] > b[ix] ? 1 : 0));
+
+  if (spec.type === "histogram") {
+    const vals = rows.map((row) => row[ix]).filter(isNum);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const k = Math.min(20, Math.max(5, Math.ceil(Math.sqrt(vals.length)))), w = (hi - lo) / k || 1;
+    const counts = new Array(k).fill(0);
+    vals.forEach((v) => counts[Math.min(k - 1, Math.floor((v - lo) / w))]++);
+    return { labels: counts.map((_, i) => `${compact.format(lo + i * w)}–${compact.format(lo + (i + 1) * w)}`),
+             datasets: [{ label: "Rows", data: counts, backgroundColor: seriesColor(0) }], yTitle: "Rows", xTitle: spec.x };
+  }
+  if (spec.type === "scatter") {
+    const iy = idx(spec.y[0]);
+    return { datasets: [{ label: `${spec.y[0]} vs ${spec.x}`, data: rows.filter((row) => isNum(row[ix]) && isNum(row[iy])).map((row) => ({ x: row[ix], y: row[iy] })),
+             backgroundColor: seriesColor(0) }], xTitle: spec.x, yTitle: spec.y[0] };
+  }
+  if (spec.series) {
+    const is = idx(spec.series), iy = idx(spec.y[0]);
+    const labels = [...new Set(rows.map((row) => row[ix]))];
+    const names = [...new Set(rows.map((row) => row[is]))];
+    const datasets = names.map((n, i) => ({ label: String(n), borderColor: seriesColor(i), backgroundColor: seriesColor(i),
+      data: labels.map((l) => rows.find((row) => row[ix] === l && row[is] === n)?.[iy] ?? null) }));
+    return { labels, datasets, yTitle: spec.y[0] };
+  }
+  return { labels: rows.map((row) => String(row[ix])), yTitle: spec.y.length === 1 ? spec.y[0] : "",
+    datasets: spec.y.map((c, i) => ({ label: c, borderColor: seriesColor(i), backgroundColor: seriesColor(i), data: rows.map((row) => row[idx(c)]) })) };
+}
+
+function drawChart(job, type) {
+  const r = job.result, spec = r.chart, box = $(`chart-${job.id}`);
+  const wrap = box.querySelector(".chart-wrap");
+  charts[job.id]?.destroy();
+  const d = chartData(r, spec, type);
+  const horizontal = type === "bar" && spec.x_kind === "category" && spec.type !== "histogram";
+  wrap.style.height = `${horizontal ? Math.max(200, d.labels.length * (d.datasets.length * 16 + 12) + 60) : 300}px`;
+  const ink2 = css("--ink-2"), grid = css("--grid");
+  const valueAxis = { grid: { color: grid }, border: { display: false }, ticks: { color: ink2, callback: (v) => compact.format(v) } };
+  const labelAxis = { grid: { display: false }, ticks: { color: ink2, maxRotation: 45, autoSkip: true } };
+  const titled = (axis, text) => (text ? { ...axis, title: { display: true, text, color: ink2 } } : axis);
+  const isScatter = type === "scatter";
+  charts[job.id] = new Chart(wrap.querySelector("canvas"), {
+    type: type === "histogram" ? "bar" : type,
+    data: { labels: d.labels, datasets: d.datasets.map((ds) => type === "line"
+      ? { ...ds, borderWidth: 2, tension: 0, pointRadius: d.labels.length > 40 ? 0 : 3, pointHoverRadius: 5, spanGaps: true }
+      : type === "scatter" ? { ...ds, pointRadius: 4, pointHoverRadius: 6 }
+      : { ...ds, borderWidth: 0, borderRadius: 4, maxBarThickness: 28,
+          ...(type === "histogram" ? { barPercentage: 1, categoryPercentage: 0.95 } : {}) }) },
+    options: {
+      indexAxis: horizontal ? "y" : "x", responsive: true, maintainAspectRatio: false,
+      interaction: { mode: isScatter ? "nearest" : "index", intersect: isScatter },
+      scales: isScatter
+        ? { x: titled(valueAxis, d.xTitle), y: titled(valueAxis, d.yTitle) }
+        : { x: horizontal ? valueAxis : titled(labelAxis, d.xTitle), y: horizontal ? { ...labelAxis, ticks: { color: ink2, autoSkip: false } } : titled(valueAxis, d.yTitle) },
+      plugins: {
+        legend: { display: d.datasets.length > 1, labels: { color: css("--ink") } },
+        tooltip: { callbacks: { label: (c) => { const v = isScatter ? `${full.format(c.parsed.x)}, ${full.format(c.parsed.y)}` : full.format(horizontal ? c.parsed.x : c.parsed.y);
+          return d.datasets.length > 1 || isScatter ? `${c.dataset.label}: ${v}` : v; } } },
+      },
+    },
+  });
+}
+
+function mountChart(job) {
+  const r = job.result, box = $(`chart-${job.id}`);
+  if (!box || !r?.chart) return;
+  if (typeof Chart === "undefined") { box.remove(); return; }  // CDN unreachable: the table is still there
+  const alts = r.chart.alternatives;
+  box.innerHTML = `<div class="chart-tools"></div><div class="chart-wrap"><canvas></canvas></div>`;
+  const tools = box.querySelector(".chart-tools");
+  const buttons = alts.length > 1 ? alts.map((t) => `<button type="button" data-type="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("") : "";
+  tools.innerHTML = `${buttons}<button type="button" data-type="hide">Hide chart</button>`;
+  const select = (type) => {
+    tools.querySelectorAll("button[data-type]").forEach((b) => b.classList.toggle("on", b.dataset.type === type));
+    drawChart(job, type);
+  };
+  tools.onclick = (e) => {
+    const t = e.target.closest("button")?.dataset.type;
+    if (!t) return;
+    if (t === "hide") {
+      const hidden = box.querySelector(".chart-wrap").hidden = !box.querySelector(".chart-wrap").hidden;
+      e.target.textContent = hidden ? "Show chart" : "Hide chart";
+      return;
+    }
+    box.querySelector(".chart-wrap").hidden = false;
+    tools.querySelector('[data-type="hide"]').textContent = "Hide chart";
+    select(t);
+  };
+  select(r.chart.type);
+}
+
 const COPY_ICON = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>`;
 const CHECK_ICON = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`;
 

@@ -276,3 +276,21 @@ def test_unknown_model_reports_tokens_but_no_cost():
 
 def test_health(make_client):
     assert make_client().get("/health").json()["status"] == "ok"
+
+
+def test_cached_answer_from_before_charts_gets_a_chart(make_client):
+    from app.cache import cache_key
+
+    client = make_client()
+    store = client.app.state.store
+    ds = store.create_dataset("d", "")
+    store.update_dataset(ds, "ready", profile={"table": "data", "row_count": 2, "columns": [], "sample_rows": []})
+    old = {"answer": "x", "sql": "s", "columns": ["country", "n"], "rows": [["UK", 5], ["FR", 3]], "truncated": False,
+           "usage": {"input_tokens": 1, "output_tokens": 1}}
+    job = store.create_finished_job("question", ds, {"question": "orders by country"}, "succeeded", old)
+    key = cache_key(ds, "orders by country", [], client.app.state.settings.anthropic_model)
+    store.cache_put(key, ds, job["id"])
+    r = client.post(f"/datasets/{ds}/questions", json={"question": "orders by country"})
+    assert r.status_code == 200 and r.json()["cached"] is True
+    result = client.get(f"/jobs/{r.json()['job_id']}").json()["result"]
+    assert result["chart"]["type"] == "bar"

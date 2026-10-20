@@ -136,6 +136,10 @@ class AnthropicLLM:
         self._client = anthropic.Anthropic(
             api_key=settings.anthropic_api_key, default_headers=headers, timeout=60.0, max_retries=2
         )
+        # Records every call (prompts, tokens, latency) in LangSmith; a no-op unless LANGSMITH_TRACING=true.
+        from langsmith.wrappers import wrap_anthropic
+
+        self._client = wrap_anthropic(self._client)
         self.model = settings.anthropic_model
 
     def _call(self, **kwargs):

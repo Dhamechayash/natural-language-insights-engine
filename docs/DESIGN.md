@@ -12,6 +12,7 @@
 | Ingest | CSV to DuckDB, repeatable, atomic (temp file then rename). Fallback ladder for encoding and types. | `app/ingest.py` |
 | Profiler | Measures columns (types, nulls, ranges, top values, negative share, text-that-is-really-dates). Knows nothing about the domain. | `app/profiler.py` |
 | Query engine | Prompt from profile, SQL repair loop, execution, grounded narration. | `app/engine.py` |
+| Chart picker | Chooses line / bar / scatter / histogram from column roles (time, measure, category) inferred from the result values; never from the question text. Skips scalars, truncated results and over-wide charts. | `app/charts.py` |
 | LLM client | Structured output via tool use, behind a small interface so tests use a scripted fake. | `app/llm.py` |
 | Validator | Static SQL checks (single SELECT, one table, no table/file functions). | `app/validator.py` |
 
@@ -24,7 +25,8 @@
 5. The SQL is statically validated, then run on a **read-only DuckDB connection with external file access disabled**, a timeout (interrupt) and a row cap.
 6. If validation or execution fails (e.g. an invented column), the error is returned to the model for up to 3 attempts, then the job is `refused`, not guessed.
 7. The LLM narrates the rows; a check requires every number in the text to trace to a result value (rounded, %, K/M/B, ranks). If not, a plain deterministic summary is shown and `answer_verified=false`.
-8. The result carries answer, SQL, assumptions, rows and token usage. Clients poll `GET /jobs/{id}`.
+8. A chart spec is chosen from the result's shape (`app/charts.py`, no LLM call) and attached as `chart`; it is `null` when a table is the better view.
+9. The result carries answer, SQL, assumptions, rows, chart and token usage. Clients poll `GET /jobs/{id}`.
 
 ## Schema context from an unfamiliar file, and where it breaks
 
@@ -68,20 +70,21 @@ numeric grounding, ingest oddities, the job state machine and API error shapes.
 
 ## What I cut
 
-SSE streaming (polling only), result caching, charts, follow-up questions, auth (out of scope), LLM tracing, lease heartbeats, column pruning for wide tables.
+SSE streaming (polling only), auth (out of scope), lease heartbeats, column pruning for wide tables, an editable semantic layer.
+
+Built since the first cut: result caching, follow-up questions, charts, and LLM tracing (LangSmith).
 
 ## What I would build next, in order
 
 1. Run and tune the live evals; add a suite for each CSV shape the panel is likely to bring.
 2. Editable semantic layer: persist and let a human correct the inferred metrics and roles per dataset.
 3. Lease heartbeats and a Postgres-backed queue for multi-host workers.
-4. Follow-up questions with conversation context.
-5. Result caching keyed on (dataset version, normalised SQL).
-6. Charts and LLM tracing/cost dashboards.
+4. Result caching keyed on normalised SQL, so differently-worded questions that produce the same query share an answer.
+5. Optional model hint for the chart type when the shape heuristics are ambiguous.
 
 ## Where a new feature would land
 
 - New metric or business rule: profile annotations (`profile["annotations"]`), rendered in `profile_to_text`.
-- New output (charts, export): a renderer after step 5 in `engine._finish`; no change to jobs or API shape.
+- New output (export, another chart type): a renderer after step 5 in `engine._finish`; no change to jobs or API shape. Charts live in `app/charts.py` (choice) and `app/static/index.html` (drawing).
 - New data source (Postgres, Snowflake): implement the load/profile/execute-readonly trio behind `ingest.py` and `engine.run_readonly`.
 - Auth or multi-tenancy: middleware in `main.py` plus an owner column on `datasets`.
